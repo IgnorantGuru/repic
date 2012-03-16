@@ -1,0 +1,355 @@
+#!/bin/bash
+# Script Name: repic    http://igurublog.wordpress.com/downloads/script-repic/ 
+# Requires: imagemagick jhead zenity
+# License: GNU GENERAL PUBLIC LICENSE Version 3 http://www.gnu.org/licenses/gpl-3.0.txt
+
+# user defaults - change these to what you want
+size="1280x1024"
+quality=85
+tmp=/tmp
+intersize=0		# set to 1 for interactive size dialog by default
+interquality=0	# set to 1 for interactive quality dialog by default
+interopt=0		# set to 1 for interactive options dialog by default
+emailapps="claws-mail kmail"	# in order of your preference
+emailsize="1024x768"
+
+
+#######################################################################
+# init
+dstfile=""
+verbose=0
+verb=""
+replace=0
+remove=0
+rotateonly=0
+movetmp=0
+email=0
+argsneeded=1
+
+help()
+{
+	cat << EOF
+repic version 1.1.1
+Resizes JPEG file(s) if larger than size; rotates original if needed
+Optional: Creates email message with pics attached (Claws and KMail)
+Requires: imagemagick jhead zenity
+Usage: repic [OPTIONS] JPEGFILE ...
+OPTIONS:
+--size ###x###        maximum HxV dims [default $size]
+--quality ##          jpeg quality [default $quality]
+--replace             overwrite original files
+--remove              remove original files
+--norotate            do not auto-rotate originals
+--rotateonly          auto-rotate originals only, no resize
+--tmp                 Move resized file(s) to $tmp
+--email               Create an email message [default $emailsize]
+--intersize           toggle interactive size dialog
+--interquality        toggle interactive quality dialog
+--interopt            toggle interactive options dialog
+--verbose             detailed feedback
+
+Instructions and updates:
+http://igurublog.wordpress.com/downloads/script-repic/
+
+EOF
+	exit
+}
+
+if [ "$1" = "" ]; then
+	help
+fi
+
+# parse command line
+jcnt=0
+while [ "$1" != "" ]; do
+	if [ "${1:0:1}" = "-" ]; then
+		case "$1" in
+			--help )
+				help
+				;;
+			--size )
+				if [ "$2" = "" ] || [ "${2:0:1}" = "-" ]; then
+					echo "Error: Option $1 requires an argument"
+					exit
+				fi
+				size="$2"
+				shift
+				;;
+			--quality )
+				if [ "$2" = "" ] || [ "${2:0:1}" = "-" ]; then
+					echo "Error: Option $1 requires an argument"
+					exit
+				fi
+				quality="$2"
+				shift
+				;;
+			--verbose )
+				verbose=1
+				verb="-verbose"
+				;;
+			--replace )
+				replace=1
+				;;
+			--remove )
+				remove=1
+				;;
+			--rotateonly | --rotate ) # --rotate for backwards compatibility
+				rotateonly=1
+				;;
+			--norotate )
+				norotate=1
+				;;
+			--tmp )
+				movetmp=1
+				;;
+			--email )
+				email=1
+				size="$emailsize"
+				;;
+			--intersize )
+				if (( intersize == 0 )); then
+					intersize=1
+				else
+					intersize=0
+				fi
+				;;
+			--interquality )
+				if (( interquality == 0 )); then
+					interquality=1
+				else
+					interquality=0
+				fi
+				;;
+			--interopt )
+				if (( interopt == 0 )); then
+					interopt=1
+				else
+					interopt=0
+				fi
+				;;
+			* )
+				echo "Error: Unknown option $1"
+				exit
+				;;
+		esac
+	else
+		j[$jcnt]="$1"
+		(( jcnt += 1 ))
+	fi
+	shift
+done
+
+if (( jcnt == 0 )); then
+	help
+fi
+
+# interactive
+if (( intersize == 1 )); then
+	title="Repic - Size?"
+	text="Enter desired size:"
+	width="300"
+	ans=`zenity --width $width --title "$title" --text "$text" \\
+	                                --entry --entry-text "$size"`
+	if [ "$ans" = "" ]; then
+		exit
+	fi
+	size="$ans"
+fi
+if (( interquality == 1 )); then
+	title="Repic - Quality?"
+	text="Enter desired JPEG quality (0-100):"
+	width="300"
+	ans=`zenity --width $width --title "$title" --text "$text" \\
+	                                --entry --entry-text "$quality"`
+	if [ $? != 0 ] || [ "$ans" = "" ]; then
+		exit
+	fi
+	quality="$ans"
+fi
+if (( interopt == 1 )); then
+	title="Repic - Options?"
+	text="Check desired options:"
+	width="300"
+	height="350"
+	o[0]="Email" ; v[0]=email
+	o[1]="Overwrite originals" ; v[1]=replace
+	o[2]="Remove originals" ; v[2]=remove
+	o[3]="Auto-Rotate only, no resize" ; v[3]=rotateonly
+	o[4]="Do not auto-rotate originals" ; v[4]=norotate
+	o[5]="Move to $tmp" ; v[5]=movetmp
+	o[6]="Verbose" ; v[6]=verbose
+	ox=0 ; opts=""
+	while (( ox < 7 )); do
+		eval oval=\$${v[$ox]}
+		if (( oval == 1 )); then
+			oval="TRUE"
+		else
+			oval="FALSE"
+		fi
+		opts="$opts $oval \"${o[$ox]}\""
+		(( ox += 1 ))
+	done
+	ans=`eval zenity --width $width --height $height --title \"$title\" --list --text \"$text\" --checklist --column \"\" --column \"Option\" $opts`
+#\\"
+	if [ "$?" != "0" ]; then
+		exit
+	fi
+	o[5]="Move to "  # keep grep happy
+	ox=0
+	while (( ox < 7 )); do
+		checked=`echo $ans | grep "${o[$ox]}"`
+		if [ "$checked" = "" ]; then
+			eval ${v[$ox]}=0
+		else
+			eval ${v[$ox]}=1
+		fi			
+		(( ox += 1 ))
+	done
+fi
+
+IFS=$'\n'
+attaches=""
+jx=0
+while (( jx < jcnt )); do
+	for i in ${j[$jx]}; do
+		if [ -f "$i" ]; then
+			srcfile="$i"
+			# Rotate original
+			if (( norotate != 1 )); then
+				if (( verbose == 1 )); then 
+					echo jhead -autorot '"'$srcfile'"'
+				fi
+				jhead -autorot "$srcfile"
+			fi
+			if (( rotateonly != 1 )); then
+				# remove extension
+				srcbase=`basename "$srcfile" .jpg`
+				srcbase=`basename "$srcbase" .jpeg`
+				srcbase=`basename "$srcbase" .JPG`
+				srcbase=`basename "$srcbase" .JPEG`
+				
+				#get path
+				pathname=`dirname "$srcfile"`
+				
+				# Create resize
+				tmpfile="$pathname/$srcbase-resizetmp.jpg"
+				if (( verbose == 1 )); then
+					echo convert '"'$srcfile'"' $verb -resize '">'$size'"' -filter Lanczos -quality $quality '"'$tmpfile'"'
+				fi
+				convert "$srcfile" $verb -resize ">$size" -filter Lanczos -quality $quality "$tmpfile"
+				err1=$?
+				if [ -e "$tmpfile" ] && [ $err1 = 0 ]; then
+					# Determine new size
+					if (( verbose == 1 )); then
+						echo "identify -format '%wx%h' \"$tmpfile\""
+						echo "identify -format '%wx%h' \"$srcfile\""
+					fi
+					resize=`identify -format '%wx%h' "$tmpfile"`
+					err2=$?
+					origsize=`identify -format '%wx%h' "$srcfile"`
+					err3=$?
+				fi
+				if [ -e "$tmpfile" ] && [ "$resize" != "" ] && \
+				                        [ "$err1$err2$err3" = "000" ]; then
+					if [ "$resize" = "$origsize" ]; then
+						# no resize needed
+						if (( email == 1 )); then
+							# add to email message
+							attaches="$attaches --attach \"$srcfile\""
+						fi
+						echo "repic: No need to resize $srcfile"
+						if (( verbose == 1 )); then
+							echo "rm -f \"$tmpfile\""
+						fi
+						rm -f "$tmpfile"
+					else
+						if (( replace == 1 )); then
+							dstfile="$srcfile"
+						else
+							dstfile="$pathname/$srcbase-[$resize].jpg"
+						fi
+						if (( verbose == 1 )); then
+							echo "mv -f \"$tmpfile\" \"$dstfile\""
+						fi
+						mv -f "$tmpfile" "$dstfile"
+						# Rotate dst (just in case)
+						if (( verbose == 1 )); then
+							echo "jhead -autorot \"$dstfile\""
+						fi
+						jhead -autorot "$dstfile"
+						if (( remove == 1 )) && (( replace == 0 )); then
+							# Remove original
+							if (( verbose == 1 )); then
+								echo "rm -f \"$srcfile\""
+							fi
+							rm -f "$srcfile"
+						fi
+						if (( movetmp == 1 )); then
+							# Move to tmp
+							if (( verbose == 1 )); then
+								echo "mv -f \"$dstfile\" \"$tmp\""
+							fi
+							mv -f "$dstfile" "$tmp"
+							dstfile="$tmp/$(basename "$dstfile")"
+						fi
+						if (( email == 1 )); then
+							# add to email message
+							attaches="$attaches --attach \"$dstfile\""
+						fi
+					fi
+					if (( verbose == 1 )); then
+						echo
+					fi
+				else
+					echo "repic: Error resizing - ignoring $srcfile"
+				fi
+							
+			fi
+		fi
+	done
+	(( jx += 1 ))
+done
+
+if (( email == 1 )) && [ "$attaches" != "" ]; then
+	IFS=" "
+	for app in $emailapps; do
+		if [ -e "/usr/bin/$app" ]; then
+			case "$app" in
+				"claws-mail" )
+					eval claws-mail $attaches &
+					exit
+					;;
+				"kmail" )
+					eval kmail -s Pics --composer $attaches &
+					exit
+					;;
+				* )
+					echo "Email app $app not supported"
+					;;
+			esac
+		fi
+	done
+fi
+
+exit
+
+#In K menu editor use %U to send list:
+#	repic --email %U
+
+# Krusader User Action example:
+#<action name="repic-email" >
+#  <title>Repic Email</title>
+#  <tooltip>Repic Email</tooltip>
+#  <icon>internet-mail</icon>
+#  <command>/opt/scripts/repic --email %aList("Selected")%</command>
+#  <availability>
+#   <filename>
+#    <show>*.jpg</show>
+#    <show>*.jpeg</show>
+#   </filename>
+#  </availability>
+#</action>
+
+# Changelog
+# 1.1.1: Fixed email pic size
+
