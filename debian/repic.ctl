@@ -7,3 +7,4 @@ Copyright: COPYING
 Changelog: changelog
 Readme: README
 Depends: imagemagick, jhead, zenity
+Files: repic /usr/bin/
